@@ -1,0 +1,180 @@
+mkdir clean_files
+
+# SRR20959676
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/076/SRR20959676/SRR20959676_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/076/SRR20959676/SRR20959676_2.fastq.gz
+
+# SRR20959677
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/077/SRR20959677/SRR20959677_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/077/SRR20959677/SRR20959677_2.fastq.gz
+
+# SRR20959678
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/078/SRR20959678/SRR20959678_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/078/SRR20959678/SRR20959678_2.fastq.gz
+
+# SRR20959679
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/079/SRR20959679/SRR20959679_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/079/SRR20959679/SRR20959679_2.fastq.gz
+
+# SRR20959680
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/080/SRR20959680/SRR20959680_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/080/SRR20959680/SRR20959680_2.fastq.gz
+
+# SRR20959681
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/081/SRR20959681/SRR20959681_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/081/SRR20959681/SRR20959681_2.fastq.gz
+
+# SRR20959682
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/082/SRR20959682/SRR20959682_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/082/SRR20959682/SRR20959682_2.fastq.gz
+
+# SRR20959683
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/083/SRR20959683/SRR20959683_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/083/SRR20959683/SRR20959683_2.fastq.gz
+
+#Quality control
+#run fastqc on all files at once
+fastqc -o qc_temp/ *.fastq *.fastq.gz
+
+#Confirm fastqc run
+ls -lh qc_temp/
+
+#batch trim the samples
+#but create folders first
+mkdir -p trimmed
+mkdir -p qc_reports
+
+for sample in SRR20959676 SRR20959677 SRR20959678 SRR20959679 SRR20959680 SRR20959681 SRR20959682; do
+  fastp \
+    -i ${sample}_1.fastq.gz \
+    -I ${sample}_2.fastq.gz \
+    -o trimmed/${sample}_1.trimmed.fastq.gz \
+    -O trimmed/${sample}_2.trimmed.fastq.gz \
+    -h qc_reports/${sample}_fastp.html \
+    -j qc_reports/${sample}_fastp.json \
+    -w 4
+done
+
+#confirm trimming by read count comparison before and after trimming
+zcat SRR20959676_1.fastq.gz | echo $((`wc -l`/4))
+zcat trimmed/SRR20959676_1.trimmed.fastq.gz | echo $((`wc -l`/4))
+
+#create folder-genome to host reference genome
+#download reference genome FASTA file
+#unzip the genome
+mkdir genome
+wget ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/013/465/GCF_000013465.1_ASM1346v1/GCF_000013465.1_ASM1346v1_genomic.fna.gz
+gunzip GCF_000013465.1_ASM1346v1_genomic.fna.gz
+
+
+#build the genome index
+nano star_index.sh
+
+#!/bin/bash
+
+# STAR Genome Index Generation
+
+# Paths
+GENOME_DIR=genome
+FASTA=genome/GCF_000013465.1_ASM1346v1_genomic.fna
+
+# Create genome directory
+mkdir -p $GENOME_DIR
+
+# Run STAR genomeGenerate
+STAR --runThreadN 4 \
+     --runMode genomeGenerate \
+     --genomeDir $GENOME_DIR \
+     --genomeFastaFiles $FASTA
+
+echo "STAR genome index built successfully in $GENOME_DIR"
+
+
+
+#align all trimmed reads to prebuilt index
+nano star_align.sh
+
+#!/bin/bash
+
+# -----------------------------
+# STAR Alignment of Trimmed Reads
+# -----------------------------
+
+# Paths
+GENOME_DIR=genome
+READ_DIR=trimmed
+OUT_DIR=star_output
+
+# Create output directory if not exists
+mkdir -p $OUT_DIR
+
+# Align reads
+for sample in $(ls $READ_DIR/*_1.trimmed.fastq.gz | sed 's/_1.trimmed.fastq.gz//')
+do
+    base=$(basename $sample)
+    echo "Running STAR for $base..."
+    
+    STAR --runThreadN 4 \
+         --genomeDir $GENOME_DIR \
+         --readFilesIn ${READ_DIR}/${base}_1.trimmed.fastq.gz ${READ_DIR}/${base}_2.trimmed.fastq.gz \
+         --readFilesCommand zcat \
+         --outFileNamePrefix ${OUT_DIR}/${base}_ \
+         --outSAMtype BAM SortedByCoordinate
+
+    echo "Finished alignment for $base"
+done
+
+echo "All samples aligned successfully."
+
+#Checking if STAR ran successfully
+#look for outputs files in output folder
+less star_output/SRR20959681_Log.final.out
+#alignment QC
+ls -lh star_output/
+ls star_output/*_Log.final.out
+
+#create multiqc report and download(local computer terminal) to view html report on browser
+multiqc -o qc_reports/ .
+scp teameinstein@135.181.163.242:~/Majoka/clean_files/qc_reports/multiqc_report.html ~/Downloads/
+
+#Run feature counts on valid BAM files only
+featureCounts -T 4 -p -t gene -g gene_id \
+  -a genome/GCF_000013465.1_ASM1346v1_genomic.gtf \
+  -o counts_featureCounts.txt \
+  star_output/SRR20959677_Aligned.sortedByCoord.out.bam \
+  star_output/SRR20959678_Aligned.sortedByCoord.out.bam \
+  star_output/SRR20959679_Aligned.sortedByCoord.out.bam \
+  star_output/SRR20959680_Aligned.sortedByCoord.out.bam \
+  star_output/SRR20959681_Aligned.sortedByCoord.out.bam \
+  star_output/SRR20959682_Aligned.sortedByCoord.out.bam
+
+#check if feature counts ran well
+#inspect output file and sizes
+ls -lh counts_featureCounts.txt
+head counts_featureCounts.txt
+
+#Index the non-empty BAMs
+for f in ./clean_files/star_output/*.bam; do
+    if [ -s "$f" ]; then
+        samtools index "$f"
+    fi
+done
+
+#Move BAMs and their indexes (.bai) files to IGV
+# Make sure IGV folder exists
+mkdir -p ~/Majoka/IGV
+
+# Move BAMs and their indexes
+mv ./clean_files/star_output/*.bam ~/Majoka/IGV/
+mv ./clean_files/star_output/*.bai ~/Majoka/IGV/
+
+# Confirm they are in IGV folder
+ls -lh ~/Majoka/IGV/
+
+
+
+
+
+
+
+
