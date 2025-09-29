@@ -160,7 +160,7 @@ for f in ./clean_files/star_output/*.bam; do
     fi
 done
 
-#Move BAMs and their indexes (.bai) files to IGV
+#For visualisation, move BAMs and their indexes (.bai) files to IGV
 # Make sure IGV folder exists
 mkdir -p ~/Majoka/IGV
 
@@ -171,9 +171,142 @@ mv ./clean_files/star_output/*.bai ~/Majoka/IGV/
 # Confirm they are in IGV folder
 ls -lh ~/Majoka/IGV/
 
+#preparation for R
+#download count .txt file to local computer(run on local terminal)
+scp teameinstein@135.181.163.242:~/Majoka/clean_files/counts_featureCounts.txt ~/Majoka/IGV/
+scp teameinstein@135.181.163.242:~/Majoka/clean_files/counts_featureCounts.txt.summary ~/Majoka/IGV/
+
+#On R studio console
+#Installing DESeq2
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("DESeq2")
+
+#Installing pheatmap
+install.packages("pheatmap")
+
+#set my working directory
+setwd("/Users/gontlekehumile/Majoka/IGV")
+#confirmation
+getwd()
+list.files()
+
+#libraries
+library(DESeq2)
+library(pheatmap)
+
+#count file
+s_a_count <- read.delim('counts_featureCounts.txt', header = T)
+s_a_meta  <- read.delim('metadata.csv', header = T)#, stringsAsFactors =T)
 
 
 
+# Ensure metadata rownames match sample names
+rownames(s_a_meta) <- s_a_meta$Sample
+
+# Step 2: Create DESeq2 dataset with 'State' as design factor
+dds <- DESeqDataSetFromMatrix(
+  countData = raw_counts,
+  colData = s_a_meta,
+  design = ~ State
+)
+
+# Step 3: prefilter to remove low counts
+dds <- dds[rowSums(counts(dds)) > 10, ]
+
+# Step 4: Run DESeq2
+dds <- DESeq(dds)
+
+# Step 5: Get results for Acute vs Chronic comparison
+final_res <- results(dds, contrast = c("State", "Acute PJI", "Chronic PJI"))
+
+# Step 6: Define up- and down-regulated genes using less strict thresholds
+upregulated <- subset(final_res, pvalue < 0.05 & log2FoldChange > 1)
+downregulated <- subset(final_res, pvalue < 0.05 & log2FoldChange < -1)
+
+# Step 7: Volcano plot
+png("volcano_plot_PJI.png", width = 1200, height = 1000, res = 150)
+
+plot(x = final_res$log2FoldChange,
+     y = -log10(final_res$pvalue),
+     cex = 0.25,
+     pch = 19,
+     col = 'grey',
+     ylim = c(0, 20),
+     ylab = '-log10(p-value)',
+     xlab = 'Log2 Fold Change')
+
+abline(v = c(-1, 1), h = -log10(0.05), lwd = 0.5, lty = 2)
+
+# Highlight DEGs
+points(upregulated$log2FoldChange,
+       y = -log10(upregulated$pvalue),
+       cex = 0.35,
+       pch = 19,
+       col = 'salmon')
+
+points(downregulated$log2FoldChange,
+       y = -log10(downregulated$pvalue),
+       cex = 0.35,
+       pch = 19,
+       col = 'lightblue')
+
+mtext('Volcano Plot: Acute vs Chronic PJI')
+dev.off()
+
+# Step 8: Heatmap of DEGs
+degs <- rbind(
+  raw_counts[rownames(upregulated), ],
+  raw_counts[rownames(downregulated), ]
+)
+
+pheatmap(degs,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         show_rownames = FALSE,
+         scale = 'row',
+         show_colnames = TRUE)
+
+# Step 9: Export DEGs and raw counts
+write.csv(upregulated, 'upregulated_PJI.csv')
+write.csv(downregulated, 'downregulated_PJI.csv')
+write.csv(raw_counts, 'raw_counts_PJI.csv')
+
+# Check counts
+up_count <- sum(final_res$pvalue < 0.05 & final_res$log2FoldChange > 1, na.rm = TRUE)
+down_count <- sum(final_res$pvalue < 0.05 & final_res$log2FoldChange < -1, na.rm = TRUE)
+up_count
+down_count
+
+#PCA plots
+# Step 1: Variance Stabilizing Transformation
+vsd <- vst(dds, blind = FALSE)  # preserves the design info
+
+# Step 2: Extract PCA coordinates
+pca_data <- plotPCA(vsd, intgroup = "State", returnData = TRUE)
+
+# Step 3: Percent variance explained
+percentVar <- round(100 * attr(pca_data, "percentVar"))
+
+if(!require(ggplot2)) {
+  install.packages("ggplot2")
+  library(ggplot2)
+} else {
+  library(ggplot2)
+}
+
+# Step 4: Create PCA plot
+ggplot(pca_data, aes(PC1, PC2, color = State)) +
+  geom_point(size = 4) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  ggtitle("PCA of PJI Samples: Acute vs Chronic") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Optional: Save PCA plot as PNG
+ggsave("PCA_PJI_Acute_vs_Chronic.png", width = 8, height = 6, dpi = 150)
 
 
 
