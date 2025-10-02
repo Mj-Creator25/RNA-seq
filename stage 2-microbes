@@ -1,0 +1,131 @@
+#!/bin/bash
+# ==========================================================
+# Transcriptomic Profiling of S. aureus (Acute vs Chronic PJI)
+# End-to-end RNA-seq pipeline with STAR + DESeq2
+# ==========================================================
+
+# -----------------------------
+# 1. Create clean working folder
+# -----------------------------
+mkdir -p clean_files
+cd clean_files
+
+# -----------------------------
+# 2. Download raw sequencing reads
+# -----------------------------
+# SRR20959676–83 (paired-end fastq from SRA)
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/076/SRR20959676/SRR20959676_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/076/SRR20959676/SRR20959676_2.fastq.gz
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/077/SRR20959677/SRR20959677_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/077/SRR20959677/SRR20959677_2.fastq.gz
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/078/SRR20959678/SRR20959678_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/078/SRR20959678/SRR20959678_2.fastq.gz
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/079/SRR20959679/SRR20959679_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/079/SRR20959679/SRR20959679_2.fastq.gz
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/080/SRR20959680/SRR20959680_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/080/SRR20959680/SRR20959680_2.fastq.gz
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/081/SRR20959681/SRR20959681_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/081/SRR20959681/SRR20959681_2.fastq.gz
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/082/SRR20959682/SRR20959682_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/082/SRR20959682/SRR20959682_2.fastq.gz
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/083/SRR20959683/SRR20959683_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR209/083/SRR20959683/SRR20959683_2.fastq.gz
+
+# -----------------------------
+# 3. Quality control
+# -----------------------------
+mkdir -p qc_temp
+fastqc -o qc_temp/ *.fastq.gz
+ls -lh qc_temp/
+
+# -----------------------------
+# 4. Trimming with fastp
+# -----------------------------
+mkdir -p trimmed qc_reports
+
+for sample in SRR20959676 SRR20959677 SRR20959678 SRR20959679 SRR20959680 SRR20959681 SRR20959682 SRR20959683; do
+  fastp \
+    -i ${sample}_1.fastq.gz \
+    -I ${sample}_2.fastq.gz \
+    -o trimmed/${sample}_1.trimmed.fastq.gz \
+    -O trimmed/${sample}_2.trimmed.fastq.gz \
+    -h qc_reports/${sample}_fastp.html \
+    -j qc_reports/${sample}_fastp.json \
+    -w 4
+done
+
+# -----------------------------
+# 5. Download Reference Genome (USA300 FPR3757)
+# -----------------------------
+mkdir -p genome
+
+# FASTA
+wget -O genome/s_aureus_USA300.fa.gz \
+  ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/013/465/GCF_000013465.1_ASM1346v1/GCF_000013465.1_ASM1346v1_genomic.fna.gz
+
+# GTF annotation (for featureCounts)
+wget -O genome/s_aureus_USA300.gtf.gz \
+  ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/013/465/GCF_000013465.1_ASM1346v1/GCF_000013465.1_ASM1346v1_genomic.gtf.gz
+
+# Optional GFF3 (for IGV / browsers)
+wget -O genome/s_aureus_USA300.gff3.gz \
+  ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/013/465/GCF_000013465.1_ASM1346v1/GCF_000013465.1_ASM1346v1_genomic.gff.gz
+
+# Unzip
+gunzip -f genome/*.gz
+
+# -----------------------------
+# 6. Build STAR index
+# -----------------------------
+nano star_index.sh
+#!/bin/bash
+GENOME_DIR=genome
+FASTA=genome/s_aureus_USA300.fa
+
+mkdir -p $GENOME_DIR
+
+STAR --runThreadN 4 \
+     --runMode genomeGenerate \
+     --genomeDir $GENOME_DIR \
+     --genomeFastaFiles $FASTA
+
+echo "STAR genome index built successfully in $GENOME_DIR"
+# -----------------------------
+# 7. Alignment with STAR
+# -----------------------------
+nano star_align.sh
+#!/bin/bash
+GENOME_DIR=genome
+READ_DIR=trimmed
+OUT_DIR=star_output
+
+mkdir -p $OUT_DIR
+
+for sample in $(ls $READ_DIR/*_1.trimmed.fastq.gz | sed 's/_1.trimmed.fastq.gz//'); do
+    base=$(basename $sample)
+    echo "Running STAR for $base..."
+    
+    STAR --runThreadN 4 \
+         --genomeDir $GENOME_DIR \
+         --readFilesIn ${READ_DIR}/${base}_1.trimmed.fastq.gz ${READ_DIR}/${base}_2.trimmed.fastq.gz \
+         --readFilesCommand zcat \
+         --outFileNamePrefix ${OUT_DIR}/${base}_ \
+         --outSAMtype BAM SortedByCoordinate
+
+    echo "Finished alignment for $base"
+done
+
+
+
+
+
+
+
